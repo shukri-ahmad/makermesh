@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MakerMesh Public</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+
+    <style>
+        body { 
+            font-family: 'Inter', system-ui, sans-serif; 
+            background: radial-gradient(circle at top right, #1e293b, #0f172a);
+        }
+        
+        /* FUTURISTIC SLIDER UI */
+        input[type=range] { -webkit-appearance: none; width: 100%; background: transparent; outline: none; }
+        input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 6px; cursor: pointer; background: #1e293b; border-radius: 9999px; border: 1px solid #334155; }
+        input[type=range]::-webkit-slider-thumb { 
+            -webkit-appearance: none; height: 16px; width: 24px; border-radius: 9999px; background: #9333ea; 
+            cursor: pointer; margin-top: -6px; box-shadow: 0 0 12px rgba(147, 51, 234, 0.8); transition: transform 0.1s; 
+        }
+        input[type=range]:disabled::-webkit-slider-thumb { background: #475569; cursor: not-allowed; box-shadow: none; }
+        
+        .maker-card { height: 380px; display: flex; flex-direction: column; transition: all 0.3s ease; }
+    </style>
+</head>
+<body class="text-white min-h-screen flex flex-col p-4 md:p-6 overflow-x-hidden relative">
+
+    <header class="flex flex-col md:flex-row justify-between items-center bg-slate-900/60 backdrop-blur-xl p-4 rounded-2xl shadow-xl border border-slate-700/50 mb-6 shrink-0 relative z-10 gap-4 md:gap-0">
+        <div class="flex items-center gap-4">
+            <div class="w-16 h-16 bg-slate-800 rounded-xl flex items-center justify-center border border-slate-600/50 shadow-md">
+                <svg class="w-10 h-10 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"></path></svg>
+            </div>
+            <div class="flex flex-col justify-center">
+                <div class="flex items-center gap-3">
+                    <h1 class="text-2xl md:text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-500 leading-tight tracking-tight">MakerMesh Public</h1>
+                    <div id="ping-indicator" class="w-3 h-3 rounded-full bg-slate-700 transition-colors duration-300" title="Cloud Sync"></div>
+                </div>
+                <p class="text-purple-400/80 text-xs font-bold tracking-widest mt-1 uppercase">Cloud Bridge Remote</p>
+            </div>
+        </div>
+        
+        <div id="login-container" class="flex items-center gap-2">
+            <input type="text" id="room-input" placeholder="Room ID" class="bg-black/40 border border-slate-600 rounded-xl px-4 py-2.5 text-center text-lg font-mono font-bold text-white w-32 focus:outline-none focus:border-purple-500 tracking-wider">
+            <button onclick="joinRoom()" class="active:scale-[0.97] transition-all bg-purple-600/90 hover:bg-purple-500 text-white font-bold py-2.5 px-6 rounded-xl shadow-[0_0_15px_rgba(147,51,234,0.4)] border border-purple-500/50">Join</button>
+        </div>
+    </header>
+
+    <div id="status-msg" class="text-center text-slate-400 mt-10 font-mono text-sm tracking-widest">Awaiting Room ID...</div>
+
+    <div class="flex flex-col gap-8 flex-1 pb-10 relative z-10">
+        <div id="dashboard-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 auto-rows-max items-start"></div>
+    </div>
+
+    <script>
+        // FIREBASE CREDENTIALS (Matches Host)
+        const firebaseConfig = {
+            apiKey: "AIzaSyB36lm5sSpYdcSmwU_lRAExS-S75qX8Asc",
+            authDomain: "makermesh-54c20.firebaseapp.com",
+            databaseURL: "https://makermesh-54c20-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "makermesh-54c20",
+            storageBucket: "makermesh-54c20.firebasestorage.app",
+            messagingSenderId: "125014306163",
+            appId: "1:125014306163:web:a1f8803aacfc983a906906"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        let currentRoom = null;
+        let layoutMap = {};
+
+        function getSVGIcon(type) {
+            if(type === 'analog') return `<svg class="w-3 h-3 inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"></path></svg>`;
+            if(type === 'digital') return `<svg class="w-3 h-3 inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>`;
+            if(type === 'motor') return `<svg class="w-3 h-3 inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>`;
+            if(type === 'servo') return `<svg class="w-3 h-3 inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path></svg>`;
+            return `<svg class="w-3 h-3 inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>`;
+        }
+
+        function getAnalogColor(val) {
+            let r = Math.min(1, Math.max(0, val / 1023));
+            let red = Math.round(100 + r * 149);
+            let green = Math.round(116 - r * 1);
+            let blue = Math.round(139 - r * 117);
+            return `rgb(${red}, ${green}, ${blue})`;
+        }
+
+        function pingNode() {
+            const p = document.getElementById('ping-indicator');
+            p.className = "w-3 h-3 rounded-full bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.9)] transition-colors duration-75";
+            setTimeout(() => { p.className = "w-3 h-3 rounded-full bg-slate-700 transition-colors duration-300"; }, 150);
+        }
+
+        function joinRoom() {
+            const id = document.getElementById('room-input').value.trim();
+            if (!id) return;
+            
+            if (currentRoom) {
+                db.ref('rooms/' + currentRoom + '/state').off();
+                db.ref('rooms/' + currentRoom + '/layout').off();
+            }
+            
+            currentRoom = id;
+            document.getElementById('status-msg').style.display = 'none';
+            document.getElementById('login-container').innerHTML = `<span class="bg-purple-900/40 text-purple-400 border border-purple-700/50 px-4 py-2.5 rounded-xl font-bold font-mono tracking-widest">ROOM: ${id}</span>`;
+            
+            // Listen for Layout mapping first
+            db.ref('rooms/' + currentRoom + '/layout').on('value', (snap) => {
+                if(snap.exists()) {
+                    layoutMap = {};
+                    snap.val().forEach(l => { layoutMap[l.id] = l.size; });
+                }
+            });
+
+            // Listen for State updates
+            db.ref('rooms/' + currentRoom + '/state').on('value', (snap) => {
+                pingNode();
+                const grid = document.getElementById('dashboard-grid');
+                if (!snap.exists() || snap.val().empty) {
+                    grid.innerHTML = '<div class="col-span-full text-center text-slate-500 font-mono mt-10">Host dashboard is empty.</div>';
+                    return;
+                }
+                
+                const cardsData = snap.val();
+                let htmlStr = '';
+                const cardSizes = ['col-span-1', 'col-span-1 md:col-span-2', 'col-span-1 md:col-span-2 lg:col-span-3', 'col-span-1 md:col-span-2 lg:col-span-3 xl:col-span-4'];
+
+                cardsData.forEach(card => {
+                    const id = card.id;
+                    const type = card.type;
+                    const mode = card.mode;
+                    const val = card.val;
+                    const title = card.title;
+                    const pubCtrl = card.publicControl !== false; // defaults true
+                    
+                    let sizeClass = cardSizes[0];
+                    if (layoutMap[id]) sizeClass = cardSizes[parseInt(layoutMap[id])];
+
+                    let borderTheme = type === 'analog' ? 'border-purple-500/30' : type === 'digital' ? 'border-emerald-500/30' : type === 'motor' ? 'border-orange-500/30' : type === 'text' ? 'border-pink-500/30' : 'border-blue-500/30';
+                    let colorClass = type === 'analog' ? 'text-purple-400' : type === 'digital' ? 'text-emerald-400' : type === 'motor' ? 'text-orange-400' : type === 'text' ? 'text-pink-400' : 'text-blue-400';
+                    let iconStr = getSVGIcon(type);
+
+                    htmlStr += `<div class="${sizeClass} maker-card bg-slate-900/60 backdrop-blur-xl rounded-2xl border ${borderTheme} shadow-xl relative z-10">`;
+                    
+                    // Header
+                    htmlStr += `<div class="p-3 border-b ${borderTheme} flex justify-between items-center bg-black/20 rounded-t-2xl"><div class="flex items-center gap-2"><span class="font-bold text-sm tracking-wide ${colorClass}">${id}</span><span class="text-[10px] font-bold tracking-wider bg-black/40 px-2 py-0.5 rounded text-slate-400 border border-slate-700/50 flex items-center gap-1">${iconStr} ${mode ? mode : type.toUpperCase()}</span></div>`;
+                    
+                    if (!pubCtrl && (mode === 'OUT' || mode === 'PUSH' || type === 'motor' || type === 'servo')) {
+                        htmlStr += `<span class="text-[9px] font-bold tracking-wider border px-2 py-0.5 rounded bg-red-900/40 text-red-400 border-red-700/50">🔒 VIEW ONLY</span>`;
+                    }
+                    htmlStr += `</div><div class="p-5 flex-1 min-h-0 flex flex-col items-center justify-center bg-transparent overflow-hidden">`;
+
+                    // BODY CONTENT
+                    let dis = pubCtrl ? '' : 'disabled opacity-50 cursor-not-allowed';
+                    let ptr = pubCtrl ? 'cursor-pointer active:scale-[0.97]' : 'cursor-not-allowed';
+
+                    if (type === 'analog' && mode === 'IN') {
+                        htmlStr += `<div class="w-full flex-1 relative bg-black/20 rounded-xl border border-slate-700/50 flex items-center justify-center overflow-hidden"><div class="text-6xl font-mono font-black tracking-tighter" style="color: ${getAnalogColor(val)}; text-shadow: 0px 4px 20px rgba(0,0,0,1);">${val}</div></div>`;
+                    } 
+                    else if (type === 'analog' && mode === 'OUT') {
+                        htmlStr += `<div class="w-full flex-1 flex items-center justify-center"><div class="text-6xl font-mono font-black tracking-tighter" style="color: ${getAnalogColor(val)};">${val}</div></div>
+                                    <input type="range" min="0" max="1023" value="${val}" ${dis} onchange="if(${pubCtrl}) sendCmd('${id}:'+this.value)" class="w-full mb-3 mt-auto">
+                                    <div class="flex justify-between w-full text-xs text-slate-500 font-mono tracking-widest"><span>0</span><span>1023</span></div>`;
+                    } 
+                    else if (type === 'digital' && mode === 'IN') {
+                        let isHigh = val == 1;
+                        let bg = isHigh ? 'bg-red-600 text-white border-red-400 shadow-[0_0_25px_rgba(220,38,38,0.8)]' : 'bg-black/40 text-slate-500 border-slate-700 shadow-inner';
+                        htmlStr += `<div class="w-28 h-28 rounded-full flex items-center justify-center text-3xl font-bold tracking-widest transition-all duration-300 border-[4px] ${bg}">${isHigh ? 'HIGH' : 'LOW'}</div>`;
+                    } 
+                    else if (type === 'digital' && mode === 'OUT') {
+                        let isHigh = val == 1;
+                        let bg = isHigh ? 'bg-blue-600 border-blue-400 shadow-[0_0_25px_rgba(37,99,235,0.8)]' : 'bg-black/40 border-slate-700 shadow-inner';
+                        htmlStr += `<div class="flex-1 flex items-center justify-center w-full"><div class="w-24 h-24 rounded-2xl transition-all duration-300 border-[3px] ${bg}"></div></div>
+                                    <div class="flex gap-3 w-full mt-auto">
+                                        <button ${dis} onclick="if(${pubCtrl}) sendCmd('${id}:0')" class="${ptr} flex-1 min-w-0 py-3 px-2 bg-slate-800/80 hover:bg-slate-700/80 rounded-xl text-slate-400 font-bold tracking-widest text-sm shadow-lg border border-slate-700/50 truncate">OFF</button>
+                                        <button ${dis} onclick="if(${pubCtrl}) sendCmd('${id}:1')" class="${ptr} flex-1 min-w-0 py-3 px-2 bg-red-600/90 hover:bg-red-500/90 rounded-xl text-white font-bold tracking-widest text-sm shadow-[0_0_15px_rgba(220,38,38,0.4)] border border-red-500/50 truncate">ON</button>
+                                    </div>`;
+                    }
+                    else if (type === 'digital' && mode === 'PUSH') {
+                        let isHigh = val == 1;
+                        let bg = isHigh ? 'bg-purple-600 border-purple-400 shadow-[0_0_25px_rgba(147,51,234,0.8)]' : 'bg-black/40 border-slate-700 shadow-inner';
+                        htmlStr += `<div class="flex-1 flex items-center justify-center w-full"><div class="w-24 h-24 rounded-full transition-all duration-300 border-[3px] ${bg}"></div></div>
+                                    <div class="flex w-full mt-auto">
+                                        <button ${dis} onmousedown="if(${pubCtrl}) sendCmd('${id}:1')" onmouseup="if(${pubCtrl}) sendCmd('${id}:0')" onmouseleave="if(${pubCtrl} && ${val}==1) sendCmd('${id}:0')" ontouchstart="if(${pubCtrl}) sendCmd('${id}:1')" ontouchend="if(${pubCtrl}) sendCmd('${id}:0')" class="${ptr} w-full py-4 px-2 bg-purple-600/90 hover:bg-purple-500/90 rounded-xl text-white font-bold tracking-widest text-lg shadow-[0_0_20px_rgba(147,51,234,0.4)] border border-purple-500/50 truncate select-none">HOLD</button>
+                                    </div>`;
+                    } 
+                    else if (type === 'text') {
+                        htmlStr += `<div class="w-full h-full flex p-4 bg-black/20 rounded-xl border border-slate-700/50 overflow-y-auto"><div class="m-auto w-full text-center text-3xl font-bold tracking-tight text-pink-400 break-words whitespace-pre-wrap">${val}</div></div>`;
+                    }
+                    else if (type === 'motor') {
+                        let displayStr = 'STOP (0)';
+                        if (val !== 0) {
+                            if (id === 'M1' || id === 'M2') displayStr = val < 0 ? `CW (${Math.abs(val)})` : `CCW (${Math.abs(val)})`;
+                            else displayStr = val > 0 ? `CW (${Math.abs(val)})` : `CCW (${Math.abs(val)})`;
+                        }
+                        
+                        htmlStr += `<div class="text-2xl font-mono text-orange-400 font-bold mb-4 w-full text-center bg-black/30 py-3 rounded-xl border border-slate-700/50">${displayStr}</div>
+                                    <div class="flex flex-col gap-3 w-full mt-auto">
+                                        <div class="flex justify-center gap-3 w-full">
+                                            <button ${dis} onclick="if(${pubCtrl}) sendCmd('${id}:-${card.ccwSpd}')" class="${ptr} flex-1 min-w-0 bg-yellow-600/90 text-white font-bold py-2.5 px-2 rounded-xl shadow-lg border border-yellow-500/50 truncate">⏪ CCW</button>
+                                            <button ${dis} onclick="if(${pubCtrl}) sendCmd('${id}:${card.cwSpd}')" class="${ptr} flex-1 min-w-0 bg-green-600/90 text-white font-bold py-2.5 px-2 rounded-xl shadow-lg border border-green-500/50 truncate">CW ⏩</button>
+                                        </div>
+                                        <button ${dis} onclick="if(${pubCtrl}) sendCmd('${id}:0')" class="${ptr} w-full bg-red-600/90 text-white font-bold py-3 px-2 rounded-xl shadow-lg border border-red-500/50 truncate">⏹️ STOP</button>
+                                    </div>`;
+                    } 
+                    else if (type === 'servo') {
+                        htmlStr += `<div class="text-6xl font-mono text-blue-400 font-black tracking-tighter drop-shadow-[0_0_15px_rgba(96,165,250,0.5)] mb-6">${val}°</div>
+                                    <input type="range" min="${Math.min(card.pos1Val, card.pos2Val)}" max="${Math.max(card.pos1Val, card.pos2Val)}" value="${val}" ${dis} onchange="if(${pubCtrl}) sendCmd('${id}:'+this.value)" class="w-full mb-6 mt-auto">
+                                    <div class="flex gap-4 w-full">
+                                        <button ${dis} onclick="if(${pubCtrl}) sendCmd('${id}:POS1')" class="${ptr} w-full bg-blue-600/90 text-white font-bold py-2 px-1 rounded-xl shadow-lg border border-blue-500/50 truncate">${card.btnPos1 || 'POS 1'}</button>
+                                        <button ${dis} onclick="if(${pubCtrl}) sendCmd('${id}:POS2')" class="${ptr} w-full bg-blue-600/90 text-white font-bold py-2 px-1 rounded-xl shadow-lg border border-blue-500/50 truncate">${card.btnPos2 || 'POS 2'}</button>
+                                    </div>`;
+                    }
+
+                    // Footer Title
+                    htmlStr += `</div><div class="p-3 bg-black/20 border-t ${borderTheme} rounded-b-2xl flex justify-center"><div class="font-bold text-xs tracking-widest text-slate-400 uppercase truncate">${title}</div></div></div>`;
+                });
+
+                grid.innerHTML = htmlStr;
+            });
+        }
+
+        function sendCmd(cmdStr) {
+            if (!currentRoom) return;
+            db.ref('rooms/' + currentRoom + '/command').push({ cmd: cmdStr, t: Date.now() });
+        }
+    </script>
+</body>
+</html>
