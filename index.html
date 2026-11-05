@@ -8,7 +8,6 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
-    <!-- We keep using Firebase v8 compat libraries for simple HTML integration -->
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 
@@ -62,15 +61,11 @@
                     <h1 class="text-2xl md:text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-cyan-500 leading-tight tracking-tight">MakerMesh Host</h1>
                     <div id="ping-indicator" class="w-3 h-3 rounded-full bg-slate-700 transition-colors duration-300" title="Node Activity"></div>
                 </div>
-                <p class="text-emerald-400/80 text-xs font-bold tracking-widest mt-1 uppercase">Cytron ESP32 Edge Gateway</p>
+                <p class="text-emerald-400/80 text-xs font-bold tracking-widest mt-1 uppercase">Cytron ESP32 BLE Gateway</p>
             </div>
         </div>
         <div class="flex flex-wrap gap-3 justify-center items-center">
-            <div class="flex bg-black/30 border border-slate-600/50 rounded-xl overflow-hidden shadow-inner">
-                <span class="px-3 py-2.5 text-slate-500 text-sm font-bold bg-black/40 border-r border-slate-600/50">IP:</span>
-                <input type="text" id="node-ip" value="192.168.4.1" class="bg-transparent px-3 py-2.5 font-mono text-emerald-400 focus:outline-none w-36 text-center text-sm tracking-wider" placeholder="192.168.4.1">
-            </div>
-            <button id="btnConnect" onclick="connectWebSocket()" class="active:scale-[0.97] transition-all bg-blue-600/90 hover:bg-blue-500 text-white font-bold py-2.5 px-5 rounded-xl shadow-[0_0_15px_rgba(37,99,235,0.4)] border border-blue-500/50 flex items-center gap-2">
+            <button id="btnConnect" onclick="connectNode()" class="active:scale-[0.97] transition-all bg-blue-600/90 hover:bg-blue-500 text-white font-bold py-2.5 px-5 rounded-xl shadow-[0_0_15px_rgba(37,99,235,0.4)] border border-blue-500/50 flex items-center gap-2">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg> Connect Node
             </button>
             <button id="btn-edit" onclick="toggleEditMode()" class="active:scale-[0.97] transition-all bg-slate-700/90 hover:bg-slate-600 text-white font-bold py-2.5 px-5 rounded-xl shadow-lg border border-slate-600/50 min-w-[140px] flex items-center justify-center gap-2">
@@ -98,7 +93,7 @@
                 <button onclick="document.getElementById('terminal-output').innerHTML='<div class=\'text-slate-600 italic\'>Logs cleared.</div>'" class="active:scale-95 text-[10px] font-bold bg-slate-800 hover:bg-slate-700 px-3 py-1 rounded text-slate-400 transition-colors border border-slate-600">CLEAR</button>
             </div>
             <div id="terminal-output" class="p-3 h-32 overflow-y-auto font-mono text-xs text-emerald-400 space-y-1 bg-transparent break-words">
-                <div class="text-slate-500 italic">Waiting for ESP32 WebSockets connection...</div>
+                <div class="text-slate-500 italic">Ready. Click 'Connect Node' to scan for MakerMesh Bluetooth devices...</div>
             </div>
         </div>
 
@@ -110,7 +105,7 @@
     </div>
 
     <script>
-        // NEW FIREBASE CONFIGURATION INJECTED HERE
+        // MAKERMESH FIREBASE CONFIG
         const firebaseConfig = {
             apiKey: "AIzaSyB36lm5sSpYdcSmwU_lRAExS-S75qX8Asc",
             authDomain: "makermesh-54c20.firebaseapp.com",
@@ -123,9 +118,7 @@
         firebase.initializeApp(firebaseConfig); 
         const db = firebase.database();
 
-        // ==========================================
         // TELEGRAM BOT SETTINGS
-        // ==========================================
         const TG_TOKEN = "YOUR_BOT_TOKEN_HERE"; 
         const TG_CHAT_ID = "YOUR_CHAT_ID_HERE"; 
         let tgLastUpdateId = 0;
@@ -134,17 +127,122 @@
         let isEditMode = false;
         let cardPermissions = {}; 
         let cardVisibility = JSON.parse(localStorage.getItem('makermesh_vis') || '{}');
-        
         const advancedData = {}; const sensorCharts = {}; let activeCardTypes = {}; 
         const cardSizes = ['col-span-1', 'col-span-1 md:col-span-2', 'col-span-1 md:col-span-2 lg:col-span-3', 'col-span-1 md:col-span-2 lg:col-span-3 xl:col-span-4'];
         
         // ==========================================
-        // WEBSOCKET INTEGRATION
+        // BLUETOOTH (BLE) INTEGRATION
         // ==========================================
-        let wsNode = null;
+        const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+        const TX_CHARACTERISTIC_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // RX on ESP32
+        const RX_CHARACTERISTIC_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"; // TX on ESP32
+
+        let bleDevice = null;
+        let bleServer = null;
+        let rxCharacteristic = null;
+        let txCharacteristic = null;
+        let receiveBuffer = "";
 
         const gridEl = document.getElementById('dashboard-grid');
         const sortable = new Sortable(gridEl, { animation: 150, ghostClass: 'sortable-ghost', disabled: true, filter: ".size-btns, input, select, button", preventOnFilter: false, onEnd: function (evt) { saveLayoutOrder(); } });
+
+        async function connectNode() {
+            if (!navigator.bluetooth) {
+                appendTerminal("Error: Web Bluetooth API is not supported in this browser.");
+                showMsg("Bluetooth Not Supported");
+                return;
+            }
+
+            if (bleDevice && bleDevice.gatt.connected) {
+                bleDevice.gatt.disconnect();
+                return;
+            }
+
+            const btn = document.getElementById("btnConnect");
+            try {
+                appendTerminal("Requesting Bluetooth Device...");
+                bleDevice = await navigator.bluetooth.requestDevice({
+                    filters: [{ namePrefix: 'MakerMesh Node' }], // Updated filter name!
+                    optionalServices: [SERVICE_UUID]
+                });
+
+                btn.innerHTML = `<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Connecting...`;
+                
+                bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+                
+                appendTerminal("Connecting to GATT Server...");
+                bleServer = await bleDevice.gatt.connect();
+
+                appendTerminal("Getting Service...");
+                const service = await bleServer.getPrimaryService(SERVICE_UUID);
+
+                appendTerminal("Getting Characteristics...");
+                txCharacteristic = await service.getCharacteristic(TX_CHARACTERISTIC_UUID);
+                rxCharacteristic = await service.getCharacteristic(RX_CHARACTERISTIC_UUID);
+
+                await rxCharacteristic.startNotifications();
+                rxCharacteristic.addEventListener('characteristicvaluechanged', handleIncomingData);
+
+                btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Connected`; 
+                btn.className = "active:scale-[0.97] transition-all bg-emerald-600/90 hover:bg-emerald-500 text-white font-bold py-2.5 px-5 rounded-xl shadow-[0_0_15px_rgba(16,185,129,0.5)] border border-emerald-500/50 flex items-center gap-2";
+                
+                appendTerminal("Bluetooth connected. Syncing layout...");
+                setTimeout(() => { sendNodeCommand('SYNC'); }, 500);
+
+            } catch (error) {
+                console.log(error);
+                appendTerminal("Connection failed or cancelled.");
+                btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg> Connect Node`; 
+            }
+        }
+
+        function onDisconnected() {
+            const btn = document.getElementById("btnConnect");
+            btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg> Connect Node`; 
+            btn.className = "active:scale-[0.97] transition-all bg-blue-600/90 hover:bg-blue-500 text-white font-bold py-2.5 px-5 rounded-xl shadow-[0_0_15px_rgba(37,99,235,0.4)] border border-blue-500/50 flex items-center gap-2";
+            showMsg("Node disconnected!"); appendTerminal("Error: Connection closed. Dashboard cleared.");
+            const p = document.getElementById('ping-indicator');
+            if(p) { clearTimeout(p.timer); p.className = "w-3 h-3 rounded-full bg-red-500 shadow-[0_0_12px_rgba(239,68,68,0.9)] transition-colors duration-300"; }
+            gridEl.innerHTML = ''; activeCardTypes = {}; if (isCloudActive) syncCloud(); 
+        }
+
+        async function sendNodeCommand(cmd) {
+            if (txCharacteristic) {
+                try {
+                    let encoder = new TextEncoder();
+                    await txCharacteristic.writeValue(encoder.encode(cmd + '\n'));
+                } catch (err) { console.error("Send Error:", err); }
+            }
+        }
+
+        function handleIncomingData(event) {
+            pingNode();
+            let value = new TextDecoder().decode(event.target.value);
+            receiveBuffer += value;
+            
+            let lines = receiveBuffer.split('\n');
+            for (let i = 0; i < lines.length - 1; i++) {
+                let line = lines[i].trim();
+                if(line) processLine(line);
+            }
+            receiveBuffer = lines[lines.length - 1]; // Keep incomplete chunk
+        }
+
+        function processLine(line) {
+            if (line.startsWith("LOG:")) { appendTerminal(line.substring(4)); } 
+            else if (line.startsWith("INIT:")) {
+                let params = line.substring(5).split(","); let id = params[0];
+                if(id.startsWith("M")) createPlayingCard(id, 'motor', null, [params[2], params[3], params[4]]);
+                else if(id.startsWith("S")) createPlayingCard(id, 'servo', null, [params[2], params[3], params[4]]);
+                else if(id.startsWith("T")) createPlayingCard(id, 'text', null, [params[2]]);
+                else if(id.startsWith("A")) createPlayingCard(id, 'analog', params[1], [params[2]]);
+                else if(id.startsWith("D")) createPlayingCard(id, 'digital', params[1], [params[2]]);
+            } else { parseTelemetry(line); }
+        }
+
+        // ==========================================
+        // UI & CARD LOGIC (Remains Identical)
+        // ==========================================
 
         function getSVGIcon(type) {
             if(type === 'analog') return `<svg class="w-3 h-3 inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"></path></svg>`;
@@ -164,10 +262,8 @@
             if (!card) return;
             let currentSize = parseInt(card.getAttribute('data-size') || '0');
             currentSize += delta;
-            
             if (currentSize < 0) currentSize = 0;
             if (currentSize >= cardSizes.length) currentSize = cardSizes.length - 1;
-            
             card.setAttribute('data-size', currentSize);
             card.className = card.className.replace(/\b(md:|lg:|xl:)?col-span-\d\b/g, '').replace(/\s+/g, ' ').trim();
             let newClasses = cardSizes[currentSize].split(' ');
@@ -243,7 +339,7 @@
                 fetch(url).catch(err => console.error("Telegram Error:", err));
             }
             const term = document.getElementById('terminal-output'); 
-            if (term.innerHTML.includes("Waiting for ESP32 WebSockets connection...")) term.innerHTML = ''; 
+            if (term.innerHTML.includes("Ready. Click 'Connect Node'")) term.innerHTML = ''; 
             const time = new Date().toLocaleTimeString('en-US', { hour12: false }); 
             const line = document.createElement('div'); 
             let colorClass = msg.toLowerCase().includes('error') || msg.toLowerCase().includes('fail') ? 'text-red-400' : 'text-emerald-400'; 
@@ -251,33 +347,6 @@
             term.appendChild(line); term.scrollTop = term.scrollHeight; 
             if (isCloudActive && cloudRoomId) { db.ref('rooms/' + cloudRoomId + '/logs').push({ time: time, msg: msg, color: colorClass }); } 
         }
-
-        async function pollTelegram() {
-            if (TG_TOKEN === "YOUR_BOT_TOKEN_HERE" || !wsNode || wsNode.readyState !== WebSocket.OPEN) return; 
-            const url = `https://api.telegram.org/bot${TG_TOKEN}/getUpdates?offset=${tgLastUpdateId + 1}`;
-            try {
-                let response = await fetch(url); let data = await response.json();
-                if (data.ok && data.result.length > 0) {
-                    data.result.forEach(update => {
-                        tgLastUpdateId = update.update_id;
-                        let text = update.message?.text?.toUpperCase().trim() || "";
-                        if (text === "/M1 STOP") setMotor('M1', 'stop');
-                        if (text === "/M2 STOP") setMotor('M2', 'stop');
-                        if (text === "/S1 POS1") setServoPos('S1', 1);
-                        if (text === "/S1 POS2") setServoPos('S1', 2);
-                        if (text.startsWith("/S1 SET ")) {
-                            let angle = parseInt(text.replace("/S1 SET ", ""));
-                            if (!isNaN(angle) && document.getElementById('slider-S1')) {
-                                let sl = document.getElementById('slider-S1');
-                                let bounded = Math.max(sl.min, Math.min(sl.max, angle));
-                                sl.value = bounded; updateVal('S1', bounded); sendNodeCommand(`S1:${bounded}`); appendTerminal(`Telegram Command: S1 set to ${bounded}°`);
-                            }
-                        }
-                    });
-                }
-            } catch (err) {}
-        }
-        setInterval(pollTelegram, 3000);
 
         function togglePermission(id) {
             cardPermissions[id] = !cardPermissions[id];
@@ -519,68 +588,6 @@
                 else displayStr = val > 0 ? `CW (${Math.abs(val)})` : `CCW (${Math.abs(val)})`;
             }
             document.getElementById(`val-${id}`).innerText = displayStr; advancedData[id] = val; sendNodeCommand(`${id}:${val}`); 
-        }
-
-        // ==========================================
-        // WEBSOCKET CONNECTION ENGINE
-        // ==========================================
-        function sendNodeCommand(cmd) { 
-            if (wsNode && wsNode.readyState === WebSocket.OPEN) { wsNode.send(cmd + '\n'); } 
-        }
-
-        function connectWebSocket() {
-            const ip = document.getElementById('node-ip').value || '192.168.4.1';
-            const btn = document.getElementById("btnConnect");
-            
-            if(wsNode) wsNode.close();
-            
-            btn.innerHTML = `<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Connecting...`;
-            appendTerminal(`Attempting connection to ws://${ip}:81`);
-            
-            wsNode = new WebSocket(`ws://${ip}:81`);
-
-            wsNode.onopen = () => {
-                btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Connected`; 
-                btn.className = "active:scale-[0.97] transition-all bg-emerald-600/90 hover:bg-emerald-500 text-white font-bold py-2.5 px-5 rounded-xl shadow-[0_0_15px_rgba(16,185,129,0.5)] border border-emerald-500/50 flex items-center gap-2";
-                appendTerminal("WebSocket connected. Syncing layout...");
-                setTimeout(() => { sendNodeCommand('SYNC'); }, 200);
-            };
-
-            wsNode.onmessage = (event) => {
-                handleIncomingData(event.data);
-            };
-
-            wsNode.onclose = () => {
-                btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg> Connect Node`; 
-                btn.className = "active:scale-[0.97] transition-all bg-blue-600/90 hover:bg-blue-500 text-white font-bold py-2.5 px-5 rounded-xl shadow-[0_0_15px_rgba(37,99,235,0.4)] border border-blue-500/50 flex items-center gap-2";
-                showMsg("Node disconnected!"); appendTerminal("Error: Connection closed. Dashboard cleared.");
-                const p = document.getElementById('ping-indicator');
-                if(p) { clearTimeout(p.timer); p.className = "w-3 h-3 rounded-full bg-red-500 shadow-[0_0_12px_rgba(239,68,68,0.9)] transition-colors duration-300"; }
-                gridEl.innerHTML = ''; activeCardTypes = {}; if (isCloudActive) syncCloud(); 
-            };
-            
-            wsNode.onerror = (err) => {
-                appendTerminal("WebSocket Error. Ensure the ESP32 is powered on and you are connected to its network.");
-            };
-        }
-
-        function handleIncomingData(data) {
-            pingNode();
-            let lines = data.split('\n');
-            lines.forEach(line => {
-                line = line.trim();
-                if(!line) return;
-                
-                if (line.startsWith("LOG:")) { appendTerminal(line.substring(4)); } 
-                else if (line.startsWith("INIT:")) {
-                    let params = line.substring(5).split(","); let id = params[0];
-                    if(id.startsWith("M")) createPlayingCard(id, 'motor', null, [params[2], params[3], params[4]]);
-                    else if(id.startsWith("S")) createPlayingCard(id, 'servo', null, [params[2], params[3], params[4]]);
-                    else if(id.startsWith("T")) createPlayingCard(id, 'text', null, [params[2]]);
-                    else if(id.startsWith("A")) createPlayingCard(id, 'analog', params[1], [params[2]]);
-                    else if(id.startsWith("D")) createPlayingCard(id, 'digital', params[1], [params[2]]);
-                } else { parseTelemetry(line); }
-            });
         }
 
         function parseTelemetry(str) {
