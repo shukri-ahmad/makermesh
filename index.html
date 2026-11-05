@@ -453,7 +453,7 @@
                     let cwEl = document.getElementById(`cw-spd-${id}`); let ccwEl = document.getElementById(`ccw-spd-${id}`);
                     if(cwEl && ccwEl) { cwEl.value = startVals[1] !== undefined ? parseInt(startVals[1]) : 255; ccwEl.value = startVals[2] !== undefined ? parseInt(startVals[2]) : 255; }
                 }
-                applySavedLayout(); applyCustomLabels(); saveLayoutOrder(); return; 
+                applySavedLayout(); applyCustomLabels(); return; 
             }
             
             if(cardPermissions[id] === undefined) {
@@ -562,7 +562,7 @@
             if (type === 'analog' && mode === 'IN') { initSensorChart(id); if(startVals) document.getElementById(`val-${id}`).style.color = getAnalogColor(Number(startVals[0])); }
             if (type === 'analog' && mode === 'OUT') updateAnalogOutUI(id, startVals ? startVals[0] : 0);
             if (type === 'digital') updateDigitalUI(id, startVals ? startVals[0] : 0);
-            applySavedLayout(); applyCustomLabels(); saveLayoutOrder(); 
+            applySavedLayout(); applyCustomLabels(); 
         }
 
         function initSensorChart(id) { const ctx = document.getElementById(`chart-${id}`).getContext('2d'); sensorCharts[id] = new Chart(ctx, { type: 'line', data: { labels: [], datasets: [{ data: [], borderColor: '#c084fc', tension: 0.3, pointRadius: 0, borderWidth: 2, fill: true, backgroundColor: 'rgba(192, 132, 252, 0.1)' }] }, options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } } }); }
